@@ -1,18 +1,19 @@
 const TelegramBot = require('node-telegram-bot-api');
 const yts = require('yt-search');
 const ytdl = require('ytdl-core');
+const lyricsFinder = require('lyrics-finder');
 const { BOT_TOKEN } = require('./config');
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
-// Store search results
-let userSearch = {};
+// user data store
+let userData = {};
 
 bot.onText(/\/start/, (msg) => {
-    bot.sendMessage(msg.chat.id, "🎵 Send me a song name!");
+    bot.sendMessage(msg.chat.id, "🎧 VK Music Bot\nSend song name...");
 });
 
-// Search song
+// SEARCH
 bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text;
@@ -22,47 +23,71 @@ bot.on('message', async (msg) => {
     bot.sendMessage(chatId, "🔍 Searching...");
 
     try {
-        let search = await yts(text);
-        let videos = search.videos.slice(0, 5);
+        let res = await yts(text);
+        let videos = res.videos.slice(0, 10);
 
-        if (!videos.length) {
-            return bot.sendMessage(chatId, "❌ No results found");
-        }
+        userData[chatId] = {
+            list: videos,
+            index: 0
+        };
 
-        userSearch[chatId] = videos;
-
-        let buttons = videos.map((v, i) => [{
-            text: `${i + 1}. ${v.title.substring(0, 30)}`,
-            callback_data: `play_${i}`
-        }]);
-
-        bot.sendMessage(chatId, "🎧 Choose a song:", {
-            reply_markup: {
-                inline_keyboard: buttons
-            }
-        });
+        showList(chatId);
 
     } catch (err) {
-        console.log(err);
-        bot.sendMessage(chatId, "❌ Error searching");
+        bot.sendMessage(chatId, "❌ Search error");
     }
 });
 
-// Play song
-bot.on('callback_query', async (query) => {
-    const chatId = query.message.chat.id;
-    const data = query.data;
+// SHOW LIST
+function showList(chatId) {
+    let data = userData[chatId];
+    let buttons = data.list.map((v, i) => [{
+        text: `${i + 1}. ${v.title.substring(0, 35)}`,
+        callback_data: `play_${i}`
+    }]);
 
-    if (!data.startsWith("play_")) return;
+    bot.sendMessage(chatId, "🎵 Select a track:", {
+        reply_markup: {
+            inline_keyboard: buttons
+        }
+    });
+}
 
-    let index = data.split("_")[1];
-    let video = userSearch[chatId][index];
+// PLAY SONG
+bot.on('callback_query', async (q) => {
+    const chatId = q.message.chat.id;
+    const data = q.data;
 
-    if (!video) {
-        return bot.sendMessage(chatId, "❌ Song not found");
+    if (data.startsWith("play_")) {
+        let index = parseInt(data.split("_")[1]);
+        userData[chatId].index = index;
+
+        playSong(chatId);
     }
 
-    bot.sendMessage(chatId, `🎶 Playing: ${video.title}`);
+    if (data === "next") {
+        userData[chatId].index++;
+        playSong(chatId);
+    }
+
+    if (data === "back") {
+        userData[chatId].index--;
+        playSong(chatId);
+    }
+
+    if (data === "lyrics") {
+        sendLyrics(chatId);
+    }
+});
+
+// PLAY FUNCTION
+async function playSong(chatId) {
+    let data = userData[chatId];
+    let video = data.list[data.index];
+
+    if (!video) return;
+
+    bot.sendMessage(chatId, `🎧 Playing\n${video.title}`);
 
     try {
         let stream = ytdl(video.url, { filter: 'audioonly' });
@@ -70,10 +95,38 @@ bot.on('callback_query', async (query) => {
         bot.sendAudio(chatId, stream, {
             title: video.title,
             performer: video.author.name
+        }, {
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        { text: "⏮ Back", callback_data: "back" },
+                        { text: "⏭ Next", callback_data: "next" }
+                    ],
+                    [
+                        { text: "📜 Lyrics", callback_data: "lyrics" }
+                    ]
+                ]
+            }
         });
 
     } catch (err) {
-        console.log(err);
-        bot.sendMessage(chatId, "❌ Error playing song");
+        bot.sendMessage(chatId, "❌ Play error");
     }
-});
+}
+
+// LYRICS
+async function sendLyrics(chatId) {
+    let data = userData[chatId];
+    let video = data.list[data.index];
+
+    try {
+        let lyrics = await lyricsFinder("", video.title);
+
+        if (!lyrics) lyrics = "❌ No lyrics found";
+
+        bot.sendMessage(chatId, lyrics.substring(0, 4000));
+
+    } catch (err) {
+        bot.sendMessage(chatId, "❌ Lyrics error");
+    }
+}
